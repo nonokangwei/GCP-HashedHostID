@@ -1,0 +1,39 @@
+{
+  "protoPayload": {
+    "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+    "status": {
+      "message": "Instance automatically restarted by Compute Engine."
+    },
+    "authenticationInfo": {
+      "principalEmail": "system@google.com"
+    },
+    "serviceName": "compute.googleapis.com",
+    "methodName": "compute.instances.automaticRestart",
+    "resourceName": "projects/xhs-us-default/zones/us-east1-b/instances/gke-gcpeast1-kafka-1-gcpeast1-kafka-b-3a0e4bdc-9ssx",
+    "request": {
+      "@type": "type.googleapis.com/compute.instances.automaticRestart"
+    }
+  },
+  "insertId": "3n138ddsrx4",
+  "resource": {
+    "type": "gce_instance",
+    "labels": {
+      "zone": "us-east1-b",
+      "instance_id": "320540705183992811",
+      "project_id": "xhs-us-default"
+    }
+  },
+  "timestamp": "2026-08-27T21:36:29.524482Z",
+  "severity": "INFO",
+  "labels": {
+    "compute.googleapis.com/root_trigger_id": "62a0b7f1-edfa-4587-8ebe-3f6c63332e09"
+  },
+  "logName": "projects/xhs-us-default/logs/cloudaudit.googleapis.com%2Fsystem_event",
+  "operation": {
+    "id": "systemevent-1787866585780-65a0e20c05250-afbae82e-b0352f74",
+    "producer": "compute.instances.automaticRestart",
+    "first": true,
+    "last": true
+  },
+  "receiveTimestamp": "2026-08-27T21:36:29.815534034Z"
+}

@@ -1,0 +1,19 @@
+{
+  "id": "2449360396712485978",
+  "creationTimestamp": "2026-08-31T09:00:00.000-07:00",
+  "name": "gke-z3demo-z3-22-hdb-a1bfdebb-7qdh",
+  "zone": "https://www.googleapis.com/compute/alpha/projects/project-kangwe-poc/zones/us-east1-d",
+  "status": "RUNNING",
+  "exposeHostTopology": true,
+  "resourceStatus": {
+    "effectiveInstanceMetadata": {
+      "vmDnsSettingMetadataValue": "ZonalOnly",
+      "enableOsconfigMetadataValue": false,
+      "serialPortLoggingEnableMetadataValue": true
+    },
+    "scheduling": {},
+    "physicalHostTopology": {
+      "host": "71397112c5ff11f47eaad4988c5c2e99"
+    }
+  }
+}

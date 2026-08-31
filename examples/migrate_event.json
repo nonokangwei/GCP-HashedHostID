@@ -1,0 +1,39 @@
+{
+  "protoPayload": {
+    "@type": "type.googleapis.com/google.cloud.audit.AuditLog",
+    "status": {
+      "message": "Instance migrated during Compute Engine maintenance."
+    },
+    "authenticationInfo": {
+      "principalEmail": "system@google.com"
+    },
+    "serviceName": "compute.googleapis.com",
+    "methodName": "compute.instances.migrateOnHostMaintenance",
+    "resourceName": "projects/xhs-us-default/zones/us-east1-b/instances/guseast1b-db-gcpeast1-yunqi-1-ae-cuybj-1",
+    "request": {
+      "@type": "type.googleapis.com/compute.instances.migrateOnHostMaintenance"
+    }
+  },
+  "insertId": "kjlaswdrt2i",
+  "resource": {
+    "type": "gce_instance",
+    "labels": {
+      "project_id": "xhs-us-default",
+      "zone": "us-east1-b",
+      "instance_id": "2449360396712485978"
+    }
+  },
+  "timestamp": "2026-08-31T09:44:17.970468Z",
+  "severity": "INFO",
+  "labels": {
+    "compute.googleapis.com/root_trigger_id": "adc456d4-2b09-438c-8a47-30a5da86aea0"
+  },
+  "logName": "projects/xhs-us-default/logs/cloudaudit.googleapis.com%2Fsystem_event",
+  "operation": {
+    "id": "systemevent-1788168699000-65a54781a34c0-da5983f4-815942e0",
+    "producer": "compute.instances.migrateOnHostMaintenance",
+    "first": true,
+    "last": true
+  },
+  "receiveTimestamp": "2026-08-31T09:44:18.095731868Z"
+}
