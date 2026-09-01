@@ -237,3 +237,101 @@ func TestSyncer_HandleHostEvent_DelayedCutover(t *testing.T) {
 		t.Errorf("expected k8s label updated to new-cutover-host-hash, got %s", labeler.labeledNodes["gke-node-delay"])
 	}
 }
+
+func TestSyncer_HandleHostEvent_DisabledTopology(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	labeler := &mockLabeler{labeledNodes: make(map[string]string)}
+
+	// Instance with exposeHostTopology = false
+	inst := &gce.Instance{
+		ID:                 "401",
+		Name:               "gke-node-disabled",
+		Zone:               "us-east1-b",
+		ExposeHostTopology: false,
+	}
+
+	gceMock := &mockGCE{
+		instances: map[string]*gce.Instance{
+			"us-east1-b/gke-node-disabled": inst,
+		},
+	}
+
+	syncService := NewSyncer(gceMock, st, labeler, "test-proj", nil,
+		WithEventPollConfig(500*time.Millisecond, 50*time.Millisecond))
+
+	event := &pubsub.HostEvent{
+		ProjectID:    "test-proj",
+		Zone:         "us-east1-b",
+		InstanceName: "gke-node-disabled",
+		MethodName:   pubsub.MethodMigrateOnHostMaintenance,
+		Timestamp:    time.Now().UTC(),
+	}
+
+	// Should not panic and return cleanly
+	err := syncService.HandleHostEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("HandleHostEvent should not error for disabled instance: %v", err)
+	}
+}
+
+func TestSyncer_HandleHostEvent_TemporarilyPendingTopology(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	labeler := &mockLabeler{labeledNodes: make(map[string]string)}
+
+	// Seed existing record
+	_ = st.Save(ctx, store.InstanceRecord{
+		InstanceID:   "501",
+		InstanceName: "gke-node-pending",
+		ProjectID:    "test-proj",
+		Zone:         "us-east1-b",
+		HashedHostID: "initial-host-hash",
+		IsGKE:        true,
+	})
+
+	// Instance with ExposeHostTopology=true, but PhysicalHostTopology is temporarily nil
+	inst := &gce.Instance{
+		ID:                 "501",
+		Name:               "gke-node-pending",
+		Zone:               "us-east1-b",
+		ExposeHostTopology: true,
+		ResourceStatus:     nil,
+	}
+
+	gceMock := &mockGCE{
+		instances: map[string]*gce.Instance{
+			"us-east1-b/gke-node-pending": inst,
+		},
+	}
+
+	syncService := NewSyncer(gceMock, st, labeler, "test-proj", nil,
+		WithEventPollConfig(2*time.Second, 50*time.Millisecond))
+
+	// After 100ms, topology becomes available with a new host ID
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		inst.ResourceStatus = &gce.ResourceStatus{
+			PhysicalHostTopology: &gce.PhysicalHostTopology{Host: "eventual-new-host-hash"},
+		}
+	}()
+
+	event := &pubsub.HostEvent{
+		ProjectID:    "test-proj",
+		Zone:         "us-east1-b",
+		InstanceName: "gke-node-pending",
+		MethodName:   pubsub.MethodMigrateOnHostMaintenance,
+		Timestamp:    time.Now().UTC(),
+	}
+
+	err := syncService.HandleHostEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("HandleHostEvent failed: %v", err)
+	}
+
+	rec, err := st.Get(ctx, "501")
+	if err != nil || rec.HashedHostID != "eventual-new-host-hash" {
+		t.Errorf("expected store updated to eventual-new-host-hash, got %v", rec)
+	}
+}
+

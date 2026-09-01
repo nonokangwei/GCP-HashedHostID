@@ -202,13 +202,24 @@ func (s *Syncer) HandleHostEvent(ctx context.Context, event *pubsub.HostEvent) e
 			lastErr = err
 			log.Printf("[Syncer WARN] Failed to get instance %s on event: %v", event.InstanceName, err)
 		} else if inst != nil {
-			hostID, _ := gce.ExtractHashedHostID(inst)
-			if oldHostID == "" || hostID != oldHostID {
-				// Host ID changed (or new instance), proceed to process, save to store and label node
+			hostID, enabled := gce.ExtractHashedHostID(inst)
+			if !enabled {
+				log.Printf("[Syncer] Instance %s does not have exposeHostTopology enabled, skipping event", event.InstanceName)
+				break
+			}
+
+			if hostID == "" {
+				log.Printf("[Syncer] Instance %s host ID is not yet available (topology pending), will re-check in %v...",
+					event.InstanceName, pollInterval)
+			} else if oldHostID != "" && hostID == oldHostID {
+				log.Printf("[Syncer] Instance %s host ID is still '%s' (migration cutover in progress), will re-check in %v...",
+					event.InstanceName, oldHostID, pollInterval)
+			} else {
+				// Host ID is non-empty and has changed (or new instance), proceed to process, save to store and label node
 				record, _, _, err := s.processInstance(ctx, inst)
 				if err != nil {
 					lastErr = err
-				} else {
+				} else if record != nil {
 					lastRecord = record
 					if oldHostID != "" {
 						log.Printf("[Syncer] Instance %s host ID changed from '%s' to '%s' (elapsed: %v)",
@@ -217,8 +228,6 @@ func (s *Syncer) HandleHostEvent(ctx context.Context, event *pubsub.HostEvent) e
 				}
 				break
 			}
-			log.Printf("[Syncer] Instance %s host ID is still '%s' (migration cutover in progress), will re-check in %v...",
-				event.InstanceName, oldHostID, pollInterval)
 		}
 
 		if time.Since(startTime) >= pollTimeout {

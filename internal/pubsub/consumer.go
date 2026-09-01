@@ -60,6 +60,13 @@ func (c *Consumer) Start(ctx context.Context) error {
 	sub := c.client.Subscription(subID)
 
 	err := sub.Receive(ctx, func(msgCtx context.Context, msg *gcppubsub.Message) {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Printf("[PubSub PANIC RECOVER] Recovered from panic while processing message %s: %v", msg.ID, r)
+				msg.Nack()
+			}
+		}()
+
 		event, isTarget, err := ParseAuditLog(msg.Data)
 		if err != nil {
 			log.Printf("[PubSub WARN] Failed to parse message (id=%s): %v", msg.ID, err)
