@@ -197,17 +197,23 @@ func (s *Syncer) HandleHostEvent(ctx context.Context, event *pubsub.HostEvent) e
 	var lastErr error
 
 	for {
-		record, err := s.RefreshInstance(ctx, project, event.Zone, event.InstanceName)
+		inst, err := s.gceClient.GetInstance(ctx, project, event.Zone, event.InstanceName)
 		if err != nil {
 			lastErr = err
-			log.Printf("[Syncer WARN] Failed to refresh instance %s on event: %v", event.InstanceName, err)
-		} else if record != nil {
-			lastRecord = record
-			// If we didn't have an old host ID, or if the host ID has changed, we are done!
-			if oldHostID == "" || record.HashedHostID != oldHostID {
-				if oldHostID != "" {
-					log.Printf("[Syncer] Instance %s host ID changed from '%s' to '%s' (elapsed: %v)",
-						record.InstanceName, oldHostID, record.HashedHostID, time.Since(startTime).Round(time.Millisecond))
+			log.Printf("[Syncer WARN] Failed to get instance %s on event: %v", event.InstanceName, err)
+		} else if inst != nil {
+			hostID, _ := gce.ExtractHashedHostID(inst)
+			if oldHostID == "" || hostID != oldHostID {
+				// Host ID changed (or new instance), proceed to process, save to store and label node
+				record, _, _, err := s.processInstance(ctx, inst)
+				if err != nil {
+					lastErr = err
+				} else {
+					lastRecord = record
+					if oldHostID != "" {
+						log.Printf("[Syncer] Instance %s host ID changed from '%s' to '%s' (elapsed: %v)",
+							record.InstanceName, oldHostID, record.HashedHostID, time.Since(startTime).Round(time.Millisecond))
+					}
 				}
 				break
 			}
@@ -217,6 +223,10 @@ func (s *Syncer) HandleHostEvent(ctx context.Context, event *pubsub.HostEvent) e
 
 		if time.Since(startTime) >= pollTimeout {
 			log.Printf("[Syncer WARN] Timed out waiting for host ID change for instance %s after %v", event.InstanceName, pollTimeout)
+			// On timeout, still do a final process to make sure latest state is reflected
+			if inst, err := s.gceClient.GetInstance(ctx, project, event.Zone, event.InstanceName); err == nil && inst != nil {
+				lastRecord, _, _, _ = s.processInstance(ctx, inst)
+			}
 			break
 		}
 
