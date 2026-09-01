@@ -56,8 +56,15 @@ func NewNodeLabeler(kubeconfigPath string, dryRun bool) (*Client, error) {
 	} else {
 		config, err = rest.InClusterConfig()
 		if err != nil {
-			log.Printf("[WARN] K8s in-cluster config not available (%v); falling back to dry-run mode", err)
-			return &Client{dryRun: true}, nil
+			// Fallback: Check if default ~/.kube/config exists
+			defaultKubeconfig := clientcmd.RecommendedHomeFile
+			if defaultCfg, fileErr := clientcmd.BuildConfigFromFlags("", defaultKubeconfig); fileErr == nil {
+				config = defaultCfg
+				log.Printf("[K8s] Loaded default kubeconfig from %s", defaultKubeconfig)
+			} else {
+				log.Printf("[WARN] K8s config not available (%v); falling back to dry-run mode", err)
+				return &Client{dryRun: true}, nil
+			}
 		}
 	}
 

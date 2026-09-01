@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"strings"
 
 	gcppubsub "cloud.google.com/go/pubsub"
 )
@@ -49,8 +50,14 @@ func NewConsumer(ctx context.Context, projectID, subscriptionID string, handler 
 
 // Start starts receiving messages from the Pub/Sub subscription. It blocks until ctx is canceled.
 func (c *Consumer) Start(ctx context.Context) error {
-	log.Printf("[PubSub] Starting listener on subscription %s (project: %s)", c.subscriptionID, c.projectID)
-	sub := c.client.Subscription(c.subscriptionID)
+	subID := c.subscriptionID
+	if strings.Contains(subID, "/subscriptions/") {
+		parts := strings.Split(subID, "/subscriptions/")
+		subID = parts[len(parts)-1]
+	}
+
+	log.Printf("[PubSub] Starting listener on subscription %s (project: %s)", subID, c.projectID)
+	sub := c.client.Subscription(subID)
 
 	err := sub.Receive(ctx, func(msgCtx context.Context, msg *gcppubsub.Message) {
 		event, isTarget, err := ParseAuditLog(msg.Data)
