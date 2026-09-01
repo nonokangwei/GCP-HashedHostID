@@ -28,6 +28,9 @@ type Syncer struct {
 	projectID string
 	zones     []string
 
+	eventPollTimeout  time.Duration
+	eventPollInterval time.Duration
+
 	mu                   sync.RWMutex
 	lastScanTime         time.Time
 	totalScanned         int64
@@ -36,18 +39,32 @@ type Syncer struct {
 	totalEventsProcessed int64
 }
 
-// SyncerOption allows customizing Syncer.
+// SyncerOption defines a functional option for Syncer.
 type SyncerOption func(*Syncer)
 
-// NewSyncer creates a new Syncer instance.
-func NewSyncer(gceClient GCEInterface, st store.Store, labeler k8s.NodeLabeler, projectID string, zones []string) *Syncer {
-	return &Syncer{
-		gceClient: gceClient,
-		store:     st,
-		labeler:   labeler,
-		projectID: projectID,
-		zones:     zones,
+// WithEventPollConfig sets custom timeout and interval for polling host migration events.
+func WithEventPollConfig(timeout, interval time.Duration) SyncerOption {
+	return func(s *Syncer) {
+		s.eventPollTimeout = timeout
+		s.eventPollInterval = interval
 	}
+}
+
+// NewSyncer creates a new Syncer instance.
+func NewSyncer(gceClient GCEInterface, st store.Store, labeler k8s.NodeLabeler, projectID string, zones []string, opts ...SyncerOption) *Syncer {
+	s := &Syncer{
+		gceClient:         gceClient,
+		store:             st,
+		labeler:           labeler,
+		projectID:         projectID,
+		zones:             zones,
+		eventPollTimeout:  3 * time.Minute,
+		eventPollInterval: 5 * time.Second,
+	}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // ScanResult contains details about a scan execution.
@@ -148,17 +165,78 @@ func (s *Syncer) HandleHostEvent(ctx context.Context, event *pubsub.HostEvent) e
 	log.Printf("[Syncer] Handling host event %s for instance=%s (zone=%s, project=%s)",
 		event.MethodName, event.InstanceName, event.Zone, project)
 
-	record, err := s.RefreshInstance(ctx, project, event.Zone, event.InstanceName)
-	if err != nil {
-		return fmt.Errorf("failed to refresh instance on event: %w", err)
+	// Fetch existing record if any to detect host ID change
+	var oldHostID string
+	if event.InstanceID != "" {
+		if existing, err := s.store.Get(ctx, event.InstanceID); err == nil && existing != nil {
+			oldHostID = existing.HashedHostID
+		}
+	}
+	if oldHostID == "" && event.InstanceName != "" {
+		if all, err := s.store.List(ctx); err == nil {
+			for _, rec := range all {
+				if rec.InstanceName == event.InstanceName {
+					oldHostID = rec.HashedHostID
+					break
+				}
+			}
+		}
+	}
+
+	pollTimeout := s.eventPollTimeout
+	if pollTimeout <= 0 {
+		pollTimeout = 3 * time.Minute
+	}
+	pollInterval := s.eventPollInterval
+	if pollInterval <= 0 {
+		pollInterval = 5 * time.Second
+	}
+
+	startTime := time.Now()
+	var lastRecord *store.InstanceRecord
+	var lastErr error
+
+	for {
+		record, err := s.RefreshInstance(ctx, project, event.Zone, event.InstanceName)
+		if err != nil {
+			lastErr = err
+			log.Printf("[Syncer WARN] Failed to refresh instance %s on event: %v", event.InstanceName, err)
+		} else if record != nil {
+			lastRecord = record
+			// If we didn't have an old host ID, or if the host ID has changed, we are done!
+			if oldHostID == "" || record.HashedHostID != oldHostID {
+				if oldHostID != "" {
+					log.Printf("[Syncer] Instance %s host ID changed from '%s' to '%s' (elapsed: %v)",
+						record.InstanceName, oldHostID, record.HashedHostID, time.Since(startTime).Round(time.Millisecond))
+				}
+				break
+			}
+			log.Printf("[Syncer] Instance %s host ID is still '%s' (migration cutover in progress), will re-check in %v...",
+				event.InstanceName, oldHostID, pollInterval)
+		}
+
+		if time.Since(startTime) >= pollTimeout {
+			log.Printf("[Syncer WARN] Timed out waiting for host ID change for instance %s after %v", event.InstanceName, pollTimeout)
+			break
+		}
+
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(pollInterval):
+		}
+	}
+
+	if lastRecord == nil && lastErr != nil {
+		return fmt.Errorf("failed to refresh instance on event: %w", lastErr)
 	}
 
 	s.mu.Lock()
 	s.totalEventsProcessed++
 	s.mu.Unlock()
 
-	if record != nil {
-		log.Printf("[Syncer] Successfully updated HashedHostID for instance %s to %s", record.InstanceName, record.HashedHostID)
+	if lastRecord != nil {
+		log.Printf("[Syncer] Successfully updated HashedHostID for instance %s to %s", lastRecord.InstanceName, lastRecord.HashedHostID)
 	}
 	return nil
 }

@@ -174,3 +174,66 @@ func TestSyncer_HandleHostEvent(t *testing.T) {
 		t.Errorf("expected k8s label updated to new-migrated-host-hash, got %s", labeler.labeledNodes["gke-node-migrated"])
 	}
 }
+
+func TestSyncer_HandleHostEvent_DelayedCutover(t *testing.T) {
+	ctx := context.Background()
+	st := store.NewMemoryStore()
+	labeler := &mockLabeler{labeledNodes: make(map[string]string)}
+
+	// Seed existing record with old host hash
+	_ = st.Save(ctx, store.InstanceRecord{
+		InstanceID:   "301",
+		InstanceName: "gke-node-delay",
+		ProjectID:    "test-proj",
+		Zone:         "us-east1-b",
+		HashedHostID: "old-host-hash",
+		IsGKE:        true,
+	})
+
+	inst := &gce.Instance{
+		ID:   "301",
+		Name: "gke-node-delay",
+		Zone: "us-east1-b",
+		ResourceStatus: &gce.ResourceStatus{
+			PhysicalHostTopology: &gce.PhysicalHostTopology{Host: "old-host-hash"},
+		},
+	}
+
+	gceMock := &mockGCE{
+		instances: map[string]*gce.Instance{
+			"us-east1-b/gke-node-delay": inst,
+		},
+	}
+
+	// Syncer with short poll interval for test
+	syncService := NewSyncer(gceMock, st, labeler, "test-proj", nil,
+		WithEventPollConfig(2*time.Second, 50*time.Millisecond))
+
+	// After 100ms, simulate GCE cutover to new host
+	go func() {
+		time.Sleep(100 * time.Millisecond)
+		inst.ResourceStatus.PhysicalHostTopology.Host = "new-cutover-host-hash"
+	}()
+
+	event := &pubsub.HostEvent{
+		ProjectID:    "test-proj",
+		Zone:         "us-east1-b",
+		InstanceName: "gke-node-delay",
+		MethodName:   pubsub.MethodMigrateOnHostMaintenance,
+		Timestamp:    time.Now().UTC(),
+	}
+
+	err := syncService.HandleHostEvent(ctx, event)
+	if err != nil {
+		t.Fatalf("HandleHostEvent failed: %v", err)
+	}
+
+	rec, err := st.Get(ctx, "301")
+	if err != nil || rec.HashedHostID != "new-cutover-host-hash" {
+		t.Errorf("expected store updated to new-cutover-host-hash, got %v", rec)
+	}
+
+	if labeler.labeledNodes["gke-node-delay"] != "new-cutover-host-hash" {
+		t.Errorf("expected k8s label updated to new-cutover-host-hash, got %s", labeler.labeledNodes["gke-node-delay"])
+	}
+}
