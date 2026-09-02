@@ -9,6 +9,9 @@
 ## 目录
 - [核心特性](#核心特性)
 - [架构设计](#架构设计)
+- [同步工作流与运行机制](#同步工作流与运行机制)
+  - [1. 初始化全量同步工作流](#1-初始化全量同步工作流)
+  - [2. 事件驱动增量同步工作流](#2-事件驱动增量同步工作流)
 - [配置参数说明](#配置参数说明)
 - [快速开始](#快速开始)
   - [本地构建与运行](#本地构建与运行)
@@ -74,6 +77,88 @@
 |  REST API |      | Mem/Redis |      |Node Label |
 +-----------+      +-----------+      +-----------+
 ```
+
+---
+
+## 同步工作流与运行机制
+
+系统围绕 **冷启动初始化同步** 与 **热迁移/故障事件驱动增量同步** 两条核心工作流设计：
+
+### 1. 初始化全量同步工作流
+
+在服务首次启动（且未指定 `-skip-init=true`）或通过 HTTP API `POST /api/v1/sync` 触发时执行。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant App as HostHashedID Server
+    participant GCE as GCE Alpha REST API
+    participant Store as Storage (Memory/Redis)
+    participant K8s as Kubernetes API (KCP)
+
+    App->>GCE: 批量拉取区域实例列表 (instances.list / aggregatedList)
+    GCE-->>App: 返回 GCE 实例拓扑元数据
+    loop 遍历每个实例
+        alt exposeHostTopology == true && host != ""
+            App->>Store: 持久化保存 (instance_id, host_hash, updated_at)
+            alt 实例为 GKE 节点 (前缀 gke-)
+                App->>K8s: Node Merge Patch: labels["hashedhostid"] = host_hash
+                K8s-->>App: 打标成功
+            end
+        else 未开启特性 / 拓扑未就绪
+            App->>App: 跳过处理
+        end
+    end
+    App->>App: 记录扫描完成统计指标
+```
+
+- **拓扑识别**：解析 GCE Alpha 资源元数据中的 `exposeHostTopology: true` 及 `resourceStatus.physicalHostTopology.host`。
+- **GKE 关联**：根据 GCE 实例命名规范与 Label 自动判定是否为 GKE Node。
+- **批量打标**：对所有开启特性的 GKE Node 进行 Kubernetes Label 原子更新 (`hashedhostid: <host_hash>`)。
+
+---
+
+### 2. 事件驱动增量同步工作流
+
+当 GCE 实例发生底层宿主机维护热迁移（Live Migration）或硬件故障自动重启（Host Error Automatic Restart）时，实时增量刷新。
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant GCP as GCP Cloud Logging Sink
+    participant PS as Cloud Pub/Sub
+    participant Syncer as Syncer Controller
+    participant GCE as GCE Alpha REST API
+    participant Store as Storage (Memory/Redis)
+    participant K8s as Kubernetes API (KCP)
+
+    GCP->>PS: 投递 AuditLog (migrateOnHostMaintenance / automaticRestart)
+    PS->>Syncer: Pub/Sub 消息实时推送 (Pull/Push)
+    Syncer->>Syncer: 解析实例名、Zone、Project 与变更前 oldHostID
+    
+    loop 防抖轮询探活 (默认步长 5s, 超时 3m)
+        Syncer->>GCE: GET /zones/{zone}/instances/{name}
+        GCE-->>Syncer: 返回当前物理拓扑 (physicalHostTopology.host)
+        alt host == oldHostID (GCP 底层割接中)
+            Syncer->>Syncer: 日志提示割接中，等待 5s 再次重试
+        else host != oldHostID (新宿主机 ID 就绪)
+            Syncer->>Store: 原子化更新存储层 (覆盖最新 host_hash)
+            alt 实例为 GKE 节点 (前缀 gke-)
+                Syncer->>K8s: 执行 Node Merge Patch 刷新标签
+                K8s-->>Syncer: 标签更新成功
+            end
+            Syncer->>Syncer: 退出轮询，完成增量同步
+        end
+    end
+    Syncer->>PS: 确认 Ack 消息
+```
+
+- **割接防抖机制 (Debounce & Cutover Polling)**：
+  - GCP Cloud Logging 在生成 `system_event` 迁移日志瞬间，GCE 底层物理拓扑可能需要 30~90 秒完成最终割接。
+  - Syncer 在接收到变更事件后，会自动对比持久化存储中的旧宿主机哈希 `oldHostID`。
+  - 若检测到 GCE API 仍处于旧宿主机状态或拓扑过渡态，Syncer 会以 5 秒步长安全轮询，直到探测到真正的**新宿主机 ID**生效。
+  - 一旦捕获变更，立即原子化更新存储并对 Kubernetes Node 发送 Merge Patch，确保 K8s 调度器与上层业务观测到的 Node 标签实时精准且绝无脏写。
+
 
 ---
 
