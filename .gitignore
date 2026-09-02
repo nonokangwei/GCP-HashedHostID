@@ -24,3 +24,8 @@ go.work
 *.swp
 *.swo
 .DS_Store
+
+# Excluded project docs and samples
+compute_alpha.txt
+design.md
+
